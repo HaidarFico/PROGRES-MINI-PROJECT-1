@@ -106,7 +106,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simple TCP Relay")
     parser.add_argument("host", help="Host address of server")
     parser.add_argument("port", type=int, help="Port number of server")
-    parser.add_argument("relay_port", type=int, default=8090, help="Replay port number")
+    parser.add_argument("relay_port", type=int, default=9080, help="Replay port number")
     args = parser.parse_args()
     run(args.relay_port, args.host, args.port)
 
