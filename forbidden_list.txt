@@ -1,0 +1,2 @@
+http://httpforever.com
+http://localhost:1234/sky.png

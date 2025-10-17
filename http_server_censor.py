@@ -8,6 +8,7 @@ from datetime import datetime
 BUFFER_SIZE = 4096
 CRLF = b'\r\n'
 HDR_SEPARATOR = b'\r\n\r\n'
+BYTE_ENCODING = 'iso-8859-1'
 
 socket_map = {}
 inputs = []
@@ -33,45 +34,20 @@ def close_relay(conn):
             print(f"[ERROR] Closing {pair}")
 
 
-def accept_client(listen_sock, remote_host, remote_port):
+def accept_client(listen_sock):
     try:
         client_conn, client_addr = listen_sock.accept()
         client_conn.setblocking(False)
-
-        server_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_conn.connect((remote_host, remote_port))
-        server_conn.setblocking(False)
-
         inputs.append(client_conn)
-        inputs.append(server_conn)
-
-        socket_map[client_conn] = server_conn
-        socket_map[server_conn] = client_conn
-
-        print(f"New relay: {client_addr} -> {remote_host}:{remote_port}")
+        print(f'New client connected from: {client_addr}')
 
     except Exception as e:
         print(f"[ERROR] Could not set up the relay")
         print(e)
 
-# def  data_transfer(sock, remote_host, remote_port):
-#     try:
-#         data = sock.recv(BUFFER_SIZE)
-
-#         if data:
-#             paired_sock = socket_map.get(sock)
-#             if paired_sock:
-#                 paired_sock.sendall(data)
-#             else:
-#                 close_relay(sock)
-#         else:
-#             close_relay(sock)
-#     except (ConnectionResetError, OSError):
-#         close_relay(sock)
-
-
-def run(listen_port, remote_host, remote_port, forbidden_links_file):
+def run(listen_port, forbidden_links_file):
     parseForbiddenList(forbidden_links_file)
+    print(f'This is the censored sites {bannedSites}')
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -93,7 +69,7 @@ def run(listen_port, remote_host, remote_port, forbidden_links_file):
 
             for sock in readable:
                 if sock is listen_sock:
-                    accept_client(listen_sock, remote_host, remote_port)
+                    accept_client(listen_sock)
                 else:
                     handleSocket(sock)
     except Exception as e:
@@ -109,25 +85,54 @@ def run(listen_port, remote_host, remote_port, forbidden_links_file):
 
 def handleSocket(sock: socket):
     try:
-        
-        pairedSocket = socket_map.get(sock)
-        if not pairedSocket:
+        print(sock)
+        data = sock.recv(BUFFER_SIZE)
+        if not data:
             close_relay(sock)
             return
         
-        # For if the data comes from client
-        if sock in socket_map and socket_map[sock] and sock.getpeername():
-            data = sock.recv(BUFFER_SIZE)
-            if not data:
+        pairedSocket = socket_map.get(sock)
+        print(f'PAIREDSOCKET {pairedSocket}')
+        if data.startswith(b'CONNECT'):
+            print('[!] HTTPS (CONNECT) request - skipping')
+            print(data.decode('iso-8859-1'))
+            close_relay(sock)
+            return
+        # First connection from client
+        if pairedSocket is None:
+            serverHost, serverPort = parseHTTPHost(data)
+            print(f'SERVER HOST {serverHost} SERVER PORT {serverPort}')
+            if not serverHost:
+                print('ERROR: no host found')
                 close_relay(sock)
                 return
+            
+            serverSock = socket.create_connection((serverHost, serverPort))
+            serverSock.setblocking(False)
+
+            print(f'SERVER SOCK {serverSock}')
+
+            socket_map[sock] = serverSock
+            socket_map[serverSock] = sock
+
+            print(f"This is a test of the socket mapping {socket_map.get(sock)}")
+            print(f"This is a test of the socket mappingsecond {socket_map.get(serverSock)}")
+            inputs.append(serverSock)
+
+            print(f"New relay: {sock.getpeername()} -> {serverHost}:{serverPort}")
+            serverSock.sendall(data)
+            return
+        if sock in socket_map and pairedSocket:
+
+            # data from client
+            # if is_client_socket(sock):
+            #     pairedSocket.sendall(data)
+            #     return
+            # For if the data comes from the server
             recvBuffers[sock] = recvBuffers.get(sock, b'') + data
             if (isHTTPMessageComplete(recvBuffers.get(sock, b''))):
-                pairedSocket.sendall(data)
-        else:
-            # For if the data comes from the server
-            if (isHTTPMessageComplete(recvBuffers.get(sock, b''))):
                 handleServerResponse(sock, pairedSocket, recvBuffers.get(sock, b''))   
+                recvBuffers[sock] = b''
     except:
         return
 
@@ -152,11 +157,21 @@ def handleServerResponse(serverSock: socket, clientSock: socket, currentBuffer: 
         censoredBody, forbiddenList = censor(parsedHttpBody)
         if(censoredBody != parsedHttpBody):
             clientIP = clientSock.getpeername()[0]
-            siteAccesed = parseHTTPHost(parsedHttpHeaders)
+            siteAccesed = serverSock.getpeername()
             logClientsForbidden(clientIP, siteAccesed, forbiddenList)
-
+        print(f'clientSock {clientSock}')
         if clientSock:
-            clientSock.sendall(parsedHttpHeaders + censoredBody)
+            fixedHeaders = adjustContentLength(parsedHttpHeaders, censoredBody)
+            try:
+                print(f"{fixedHeaders.decode(BYTE_ENCODING)}")
+                print(f"{censoredBody.decode(BYTE_ENCODING)}")
+                print(f"[DEBUG] Sending to clientSock: {clientSock}")
+                print(f"[DEBUG] Client peer: {clientSock.getpeername()}")
+                clientSock.sendall(fixedHeaders + censoredBody)
+            except BlockingIOError:
+                print("[!] Socket would block on send")
+            except Exception as e:
+                print(f"[!] Error sending to client: {e}")
         else:
             close_relay(serverSock)
     else:
@@ -196,19 +211,28 @@ def parseHTTPBody(data:bytes, bodyLength: int):
     return body, remaining
 
 def parseHTTPHost(headerBytes: bytes):
+    hostline = None
     try:
         headersDecoded = headerBytes.decode('iso-8859-1')
         for headerLine in headersDecoded.split('\r\n'):
             if headerLine.lower().startswith('host:'):
-                return headerLine.split(':', 1)[1].strip()
+                hostline = headerLine.split(':', 1)[1].strip()
+            if hostline:
+                if ':' in hostline:
+                    host, port = hostline.split(':', 1)
+                    return host, int(port)
+                return hostline, 80
+        return None, None
     except:
-        return "unknown"
+        return None, None
 
 def censor(HttpBody: bytes):
+    print('entering censor...')
     forbiddenLinksFound = []
     try:
         bodyParsed = HttpBody.decode('iso-8859-1')
     except UnicodeDecodeError:
+        print('Error parsing httpbody')
         return HttpBody
     # Regex to get all instances of <a href="...">...</a>
     regexPattern = re.compile(r'<a\s+href="([^"]+)">(.*?)</a>', re.IGNORECASE | re.DOTALL)
@@ -223,7 +247,6 @@ def censor(HttpBody: bytes):
         return match.group(0)  # leave unchanged
 
     censoredText = regexPattern.sub(replace_link, bodyParsed)
-
     return censoredText.encode('iso-8859-1'), forbiddenLinksFound
 
 def logClientsForbidden(clientIP, siteAccessed, forbiddenSites):
@@ -232,6 +255,7 @@ def logClientsForbidden(clientIP, siteAccessed, forbiddenSites):
             currentTime = datetime.now()
             for forbiddenSite in forbiddenSites:
                 f.write(f'{currentTime};{clientIP};{siteAccessed};{forbiddenSite}\n')
+                print('log written!')
                 f.close()
     except:
         with open('logClientForbidden.txt', "w") as f:
@@ -262,11 +286,23 @@ def isHTTPMessageComplete(buffer: bytes):
 
     return len(buffer) >= totalLength
 
+def adjustContentLength(headers: bytes, body: bytes):
+    headersDecoded = headers.decode('iso-8859-1')
+    newHeaders = []
+    contentLengthSet = False
+    for line in headersDecoded.split('\r\n'):
+        if line.lower().startswith('content-length:'):
+            newHeaders.append(f'Content-Length: {len(body)}')
+            contentLengthSet = True
+        else:
+            newHeaders.append(line)
+    if not contentLengthSet:
+        newHeaders.append(f'Content-Length: {len(body)}')
+    return '\r\n'.join(newHeaders).encode('iso-8859-1') + b'\r\n\r\n'
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simple HTTP Censor")
-    parser.add_argument("host", help="Host address of server")
-    parser.add_argument("port", type=int, help="Port number of server")
     parser.add_argument("relay_port", type=int, default=9080, help="Replay port number")
     parser.add_argument("forbidden_links_file", type=str, default='forbidden_list.txt', help='txt file of the forbidden sites')
     args = parser.parse_args()
-    run(args.relay_port, args.host, args.port, args.forbidden_links_file)
+    run(args.relay_port, args.forbidden_links_file)
