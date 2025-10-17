@@ -1,4 +1,5 @@
 import socket
+import re
 import select
 import sys
 import argparse
@@ -7,6 +8,7 @@ BUFFER_SIZE = 4096
 
 socket_map = {}
 inputs = []
+cache = {}
 
 def close_relay(conn):
     pair = socket_map.pop(conn, None)
@@ -14,8 +16,6 @@ def close_relay(conn):
         del socket_map[pair]
     if conn in inputs:
         inputs.remove(conn)
-    if pair in inouts:
-        inouts.remove(pair)
 
     try:
         conn.close()
@@ -29,38 +29,59 @@ def close_relay(conn):
 
 
 def accept_client(listen_sock, remote_host, remote_port):
+    print(cache)
     try:
         client_conn, client_addr = listen_sock.accept()
         client_conn.setblocking(False)
 
-        server_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_conn.connect((remote_host, remote_port))
-        server_conn.setblocking(False)
-
         inputs.append(client_conn)
-        inputs.append(server_conn)
 
-        socket_map[client_conn] = server_conn
-        socket_map[server_conn] = client_conn
-
-        print(f"New relay: {client_addr} -> {remote_host}:{remote_port}")
+        socket_map[client_conn] = None
+        print(f"[+] Client  connected: {client_addr}")
 
     except Exception as e:
         print(f"[ERROR] Could not set up the relay")
-        print(e)
 
-def  data_transfer(sock, remote_host, remote_port):
+
+def  handle_http_request(sock, remote_host, remote_port):
     try:
         data = sock.recv(BUFFER_SIZE)
-
-        if data:
-            paired_sock = socket_map.get(sock)
-            if paired_sock:
-                paired_sock.sendall(data)
-            else:
-                close_relay(sock)
-        else:
+        
+        if not data:
             close_relay(sock)
+            return
+
+        request = data.decode()
+        match = re.match(r"GET\s+(\S+)", request)
+        if not match:
+            close_relay(sock)
+            return
+
+        uri = match.group(1)
+        print(f"The requested URI: {uri}")
+
+        if uri in cache:
+            print(f"Requested URI is served by the cache")
+            sock.sendall(cache[uri])
+            close_relay(sock)
+            return
+        
+        server_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_conn.connect((remote_host, remote_port))
+        server_conn.sendall(data)
+
+        response = b''
+        while True:
+            chunk = server_conn.recv(BUFFER_SIZE)
+            if not chunk:
+                break
+            response += chunk
+        server_conn.close()
+
+        cache[uri] = response
+        sock.sendall(response)
+        close_relay(sock)
+        
     except (ConnectionResetError, OSError):
         close_relay(sock)
 
@@ -83,22 +104,19 @@ def run(listen_port, remote_host, remote_port):
 
     try:
         while inputs:
-            readable, _, _ = select.select(inputs, [], inputs)
+            readable, _, _ = select.select(inputs, [], [])
 
             for sock in readable:
                 if sock is listen_sock:
                     accept_client(listen_sock, remote_host, remote_port)
                 else:
-                    data_transfer(sock, remote_host, remote_port)
+                    handle_http_request(sock, remote_host, remote_port)
     except Exception as e:
         print(f"Shutting Down...")
         print(e)
     finally:
-        for sock in inputs:
-            if sock is not listen_sock:
-                close_pair(sock)
-            else:
-                sock.close()
+        for s in inputs:
+            s.close()
         print(f"Relay stopped")
 
 
