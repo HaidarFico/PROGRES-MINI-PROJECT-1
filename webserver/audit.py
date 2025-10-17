@@ -22,15 +22,14 @@ def audit(logPath, uriFragment):
                 if len(parts) >= 7:
                     size = int(parts[6])
                     status = int(parts[5])
-                    responseRequestId = parts[1]
-                    if size > 0 and responseRequestId in requests:
-                        time, uri, clientIp = requests[responseRequestId]
+                    if size > 0 and requestId in requests:
+                        time, uri, clientIp = requests[requestId]
                         if uriFragment.lower() in uri.lower():
                             connectedClients.append({"clientIp": clientIp, 'time': time, 'size': size, 'status': status})
 
     print(f"Clients that accessed '{uriFragment}':")
     for connectedClient in connectedClients:
-        print(f"client {connectedClient['clientIp']} connected at {connectedClient['time']} and received status {connectedClient['status']} with size {size}", )
+        print(f"client {connectedClient['clientIp']} connected at {connectedClient['time']} and received status {connectedClient['status']} with size {connectedClient['size']}", )
 
 
 if __name__ == "__main__":
