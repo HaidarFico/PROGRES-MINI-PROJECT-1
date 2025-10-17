@@ -13,7 +13,7 @@ def audit(logPath, uriFragment):
 
             if record_type == "REQUEST":
                 if len(parts) >= 6:
-                    uri = parts[3]
+                    uri = parts[5]
                     clientIp = parts[3].strip("()").split(",")[0].replace("'", "")
                     time = parts[2]
                     requests[requestId] = (time, uri, clientIp)
@@ -25,8 +25,8 @@ def audit(logPath, uriFragment):
                     responseRequestId = parts[1]
                     if size > 0 and responseRequestId in requests:
                         time, uri, clientIp = requests[responseRequestId]
-                        print(uri)
-                        connectedClients.append({"clientIp": clientIp, 'time': time, 'size': size, 'status': status})
+                        if uriFragment.lower() in uri.lower():
+                            connectedClients.append({"clientIp": clientIp, 'time': time, 'size': size, 'status': status})
 
     print(f"Clients that accessed '{uriFragment}':")
     for connectedClient in connectedClients:
