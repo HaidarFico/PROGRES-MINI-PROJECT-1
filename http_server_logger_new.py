@@ -8,6 +8,8 @@ import datetime
 BYTE_ENCODING = 'iso-8859-1'
 BUFFER_SIZE = 4096
 
+nextHopData = {}
+
 socket_map = {}
 inputs = []
 cache = {}
@@ -64,7 +66,7 @@ def accept_client(listen_sock):
         print(f"[ERROR] Could not set up the relay")
 
 
-def handle_http_request(sock):
+def handle_http_request(sock, isFinalRelay):
     try:
         data = sock.recv(BUFFER_SIZE)
         if not data:
@@ -84,8 +86,12 @@ def handle_http_request(sock):
             return
 
         server_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_conn.connect((remote_host, remote_port))
-        server_conn.sendall(data)
+        if(isFinalRelay):
+            server_conn.connect((remote_host, remote_port))
+            server_conn.sendall(data)
+        else:
+            server_conn.connect((nextHopData['ip'], nextHopData['port']))
+            server_conn.sendall(data)
 
         response = b''
         while True:
@@ -102,7 +108,13 @@ def handle_http_request(sock):
     except (ConnectionResetError, OSError) as e:
         close_relay(sock)
 
-def run(listen_port):
+def run(listen_port, nextHopIp = None, nextHopPort = None):
+    isFinalRelay = True
+    if nextHopIp != None  and nextHopPort != None:
+        print('Not acting as a final relay.')
+        isFinalRelay = False
+        nextHopData['ip'] = nextHopIp
+        nextHopData['port'] = int(nextHopPort)
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -122,7 +134,7 @@ def run(listen_port):
                 if sock is listen_sock:
                     accept_client(listen_sock)
                 else:
-                    handle_http_request(sock)
+                    handle_http_request(sock, isFinalRelay)
     except Exception as e:
         print(f"Shutting Down...")
         print(e)
@@ -158,5 +170,7 @@ def parseURLForLog(headersDecoded: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HTTP Relay")
     parser.add_argument("relay_port", type=int, default=9080, help="Relay port number")
+    parser.add_argument("--next_hop_ip", type=str, default=None, help="IP Address of the next hop", required=False)
+    parser.add_argument("--next_hop_port", type=int, default=None, help="Port number of the next hop", required=False)
     args = parser.parse_args()
-    run(args.relay_port)
+    run(args.relay_port, args.next_hop_ip, args.next_hop_port)
