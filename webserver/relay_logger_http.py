@@ -4,6 +4,7 @@ import select
 import sys
 import argparse
 import datetime
+import uuid
 
 BYTE_ENCODING = 'iso-8859-1'
 BUFFER_SIZE = 4096
@@ -14,30 +15,30 @@ socket_map = {}
 inputs = []
 cache = {}
 
-def logServerResponse(serverIP, clientIP, status, length):
+def logServerResponse(serverIP, clientIP, status, length, uuid):
     try:
         with open('loggersLog.txt', "a") as f:
             currentTime = datetime.datetime.now()
-            f.write(f'{currentTime};RESPONSE;{serverIP};{clientIP};{status};{length}\n')
+            f.write(f'RESPONSE;{uuid};{currentTime};{serverIP};{clientIP};{status};{length}\n')
             print('Response logged!')
             f.close()
     except:
         with open('loggersLog.txt', "w") as f:
             f.close()
-            logServerResponse(serverIP, clientIP, status, length)
+            logServerResponse(serverIP, clientIP, status, length, uuid)
 
-def logClientRequest(clientIP, siteIP, URI):
+def logClientRequest(clientIP, siteIP, URI, uuid):
     try:
         with open('loggersLog.txt', "a") as f:
             currentTime = datetime.datetime.now()
-            f.write(f'{currentTime};REQUEST;{clientIP};{siteIP};{URI};GET\n')
+            f.write(f'REQUEST;{uuid};{currentTime};{clientIP};{siteIP.strip()};{URI};GET\n')
             f.close()
             print('Client request logged!')
     except Exception as e:
         print(f'Exception writing client request with {e}')
         with open('loggersLog.txt', "w") as f:
             f.close()
-            logClientRequest(clientIP, siteIP, URI)
+            logClientRequest(clientIP, siteIP, URI, uuid)
     
 def close_relay(conn):
     pair = socket_map.pop(conn, None)
@@ -77,7 +78,8 @@ def handle_http_request(sock, isFinalRelay):
         uri_match = re.match(r"GET\s+(\S+)", request)
         uri = uri_match.group(1) if uri_match else None
 
-        logClientRequest(sock.getpeername(), parseURLForLog(request), uri)
+        uniqueId = uuid.uuid4()
+        logClientRequest(sock.getpeername(), parseURLForLog(request), uri, uniqueId)
 
         remote_host, remote_port = parseHTTPHost(request)
         # print(f'this is remote host and port {remote_host} {remote_port}')
@@ -100,7 +102,7 @@ def handle_http_request(sock, isFinalRelay):
                 break
             response += chunk
 
-        logServerResponse(server_conn.getpeername(), sock.getpeername(), 'TEMP', len(response))
+        logServerResponse(server_conn.getpeername(), sock.getpeername(), parseHTTPStatus(response), len(response), uniqueId)
         sock.sendall(response)
         server_conn.close()
         close_relay(sock)
@@ -157,6 +159,18 @@ def parseHTTPHost(headersDecoded: bytes):
         return None, None
     except:
         return None, None
+
+def parseHTTPStatus (headersDecoded: bytes):
+    headers = headersDecoded.decode(BYTE_ENCODING).split('\r\n')
+    
+    statusLine = headers[0].strip()
+
+    if not statusLine.startswith('HTTP/'):
+        return None
+    
+    statusParts = statusLine.split(' ', 2)
+
+    return int(statusParts[1])
 
 def parseURLForLog(headersDecoded: str):
     try:
